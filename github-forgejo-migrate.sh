@@ -219,6 +219,18 @@ else
 	MIGRATE_FORKS=false
 fi
 
+# Get the MIGRATE_DESCRIPTION setting from the environment or via prompt.
+MIGRATE_DESCRIPTION=$(or_default "$MIGRATE_DESCRIPTION" "${yellow}Should repository descriptions be migrated? (Yes/No):${reset}" "Yes")
+
+# Clean up MIGRATE_DESCRIPTION input.
+MIGRATE_DESCRIPTION="$(echo "$MIGRATE_DESCRIPTION" | tr -d '\n' | tr '[:upper:]' '[:lower:]')"
+
+if [[ "$MIGRATE_DESCRIPTION" =~ ^y(es)?$ ]]; then
+	MIGRATE_DESCRIPTION=true
+else
+	MIGRATE_DESCRIPTION=false
+fi
+
 # Get the VISIBILITY setting from the environment or via prompt.
 VISIBILITY=$(or_default "$VISIBILITY" "${yellow}Which repositories to migrate? (private/public/both):${reset}" "both")
 
@@ -257,6 +269,7 @@ fi
 echo -e "${green}Force sync is set to: ${FORCE_SYNC}${reset}"
 echo -e "${green}Migrate archive status is set to: ${MIGRATE_ARCHIVE_STATUS}${reset}"
 echo -e "${green}Migrate forks is set to: ${MIGRATE_FORKS}${reset}"
+echo -e "${green}Migrate description is set to: ${MIGRATE_DESCRIPTION}${reset}"
 echo -e "${green}Visibility is set to: ${VISIBILITY}${reset}"
 echo -e "${green}Dry run is set to: ${DRY_RUN}${reset}"
 echo -e "${green}Output report is set to: ${OUTPUT_REPORT}${reset}"
@@ -400,6 +413,7 @@ echo "$all_repos" | jq -c '.[]' | while read -r repo; do
 	archived_flag=$(echo "$repo" | jq -r '.archived')
 	full_name=$(echo "$repo" | jq -r '.full_name')
 	fork_flag=$(echo "$repo" | jq -r '.fork')
+	description=$(echo "$repo" | jq -r '.description // empty')
 
 	# Skip forked repos if MIGRATE_FORKS is false
 	if [ "$fork_flag" = "true" ] && [ "$MIGRATE_FORKS" = false ]; then
@@ -508,6 +522,27 @@ echo "$all_repos" | jq -c '.[]' | while read -r repo; do
 			else
 				echo -e " ${cyan}[DRY RUN] Would archive: $repo_name${reset}"
 			fi
+		fi
+	fi
+
+	# If migration succeeded (or already existed) and the repo has a description,
+	# and the user wants to migrate descriptions, patch the Forgejo repo.
+	if [ "$success" = true ] && [ -n "$description" ] && [ "$MIGRATE_DESCRIPTION" = true ]; then
+		if ! $DRY_RUN; then
+			echo -ne "  ${yellow}Setting description on Forgejo...${reset}"
+			patch_payload=$(jq -n --arg desc "$description" '{"description": $desc}')
+			if ! patch_response=$(safe_curl -X PATCH -H "Content-Type: application/json" -H "Authorization: token $FORGEJO_TOKEN" -d "$patch_payload" "$FORGEJO_URL/api/v1/repos/$FORGEJO_USER/$repo_name"); then
+				echo -e " ${red}Description request failed.${reset}"
+			else
+				patch_error=$(echo "$patch_response" | jq -r '.message // empty')
+				if [ -n "$patch_error" ]; then
+					echo -e " ${red}Error: $patch_error${reset}"
+				else
+					echo -e " ${green}Done!${reset}"
+				fi
+			fi
+		else
+			echo -e "  ${cyan}[DRY RUN] Would set description: $description${reset}"
 		fi
 	fi
 

@@ -27,6 +27,8 @@ that no longer exist on GitHub.
 - **Clone mode**: one-time copy without ongoing sync.
 - **Archive Transfer**: Optionally transfers the archived status so archived
   repos remain read-only on Forgejo.
+- **Description Transfer**: Optionally copies repository descriptions from
+  GitHub to Forgejo.
 - **Skip Forks**: Option to ignore forked repositories during migration.
 - **Visibility Filter**: Migrate only private, only public, or all repositories.
 - **Dry Run Mode**: Preview what would happen without making changes.
@@ -69,6 +71,7 @@ variables:
 | `FORCE_SYNC`             | Set to `Yes` to delete Forgejo repos that no longer exist on GitHub             |
 | `MIGRATE_ARCHIVE_STATUS` | Set to `Yes` (default) to transfer the archived status of repositories          |
 | `MIGRATE_FORKS`          | Set to `No` to skip fork repositories during migration (default: `Yes`)         |
+| `MIGRATE_DESCRIPTION`    | Set to `Yes` (default) to copy repository descriptions to Forgejo               |
 | `VISIBILITY`             | Filter by visibility: `private`, `public`, or `both` (default: `both`)          |
 | `DRY_RUN`                | Set to `Yes` to preview actions without executing (dry run mode, default: `No`) |
 | `OUTPUT_REPORT`          | Set to `Yes` to write a `migration.json` report after the run (default: `No`)   |
@@ -172,6 +175,9 @@ token**.
    GitHub are also archived (read-only) on Forgejo after migration.
    - **Note**: This currently only applies to the `clone` strategy. Forgejo
      mirrors cannot be manually archived via the API.
+6. **Description (Optional)**: If enabled, copies each repository's description
+   from GitHub to Forgejo after migration. Applies to both `mirror` and `clone`
+   strategies.
 
 ## FAQ
 
