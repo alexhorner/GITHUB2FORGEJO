@@ -30,6 +30,9 @@ that no longer exist on GitHub.
 - **Skip Forks**: Option to ignore forked repositories during migration.
 - **Visibility Filter**: Migrate only private, only public, or all repositories.
 - **Dry Run Mode**: Preview what would happen without making changes.
+- **Migration Report**: Optionally writes a `migration.json` report with each
+  repo's name, URL, visibility, archive status on GitHub and Forgejo, migration
+  status, and new Forgejo location.
 - Optional cleanup of outdated mirrors on Forgejo.
 - Fully terminal-interactive or configurable via environment variables.
 
@@ -68,6 +71,24 @@ variables:
 | `MIGRATE_FORKS`          | Set to `No` to skip fork repositories during migration (default: `Yes`)         |
 | `VISIBILITY`             | Filter by visibility: `private`, `public`, or `both` (default: `both`)          |
 | `DRY_RUN`                | Set to `Yes` to preview actions without executing (dry run mode, default: `No`) |
+| `OUTPUT_REPORT`          | Set to `Yes` to write a `migration.json` report after the run (default: `No`)   |
+
+#### `migration.json` Report Format
+
+When `OUTPUT_REPORT=Yes`, a `migration.json` file is written to the current
+directory containing an array of objects, one per repository processed:
+
+| Field                      | Type      | Description                                                                          |
+| -------------------------- | --------- | ------------------------------------------------------------------------------------ |
+| `repo_name`                | `string`  | Repository name                                                                      |
+| `repo_url`                 | `string`  | Source URL on GitHub                                                                 |
+| `private`                  | `boolean` | Whether the repository is private on GitHub                                          |
+| `archived_on_github`       | `boolean` | Whether the repository is archived on GitHub                                         |
+| `fork`                     | `boolean` | Whether the repository is a fork                                                     |
+| `skipped`                  | `boolean` | Whether the repository was skipped (e.g. no token for a private repo)                |
+| `errored`                  | `boolean` | Whether the migration attempt failed                                                 |
+| `new_location`             | `string`  | Full URL of the repository on Forgejo, or `null` if errored or skipped               |
+| `archived_on_new_location` | `boolean` | `true` when `archived_on_github` is `true` and `MIGRATE_ARCHIVE_STATUS` is enabled   |
 
 ### 2. Automated Development & Testing Environment
 

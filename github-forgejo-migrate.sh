@@ -13,6 +13,7 @@
 #   FORCE_SYNC: Whether to delete repositories on Forgejo that no longer exist on GitHub.
 #              Answer Yes (to delete) or No.
 #   VISIBILITY: Which repositories to migrate by visibility: "private", "public", or "both" (default).
+#   OUTPUT_REPORT: Whether to write a migration report to migration.json (Yes/No).
 
 # Define some color codes for output.
 red=$(tput setaf 1)
@@ -241,11 +242,24 @@ else
 	DRY_RUN=false
 fi
 
+# Get the OUTPUT_REPORT setting from the environment or via prompt.
+OUTPUT_REPORT=$(or_default "$OUTPUT_REPORT" "${yellow}Write a migration report to migration.json? (Yes/No):${reset}" "No")
+
+# Clean up OUTPUT_REPORT input.
+OUTPUT_REPORT="$(echo "$OUTPUT_REPORT" | tr -d '\n' | tr '[:upper:]' '[:lower:]')"
+
+if [[ "$OUTPUT_REPORT" =~ ^y(es)?$ ]]; then
+	OUTPUT_REPORT=true
+else
+	OUTPUT_REPORT=false
+fi
+
 echo -e "${green}Force sync is set to: ${FORCE_SYNC}${reset}"
 echo -e "${green}Migrate archive status is set to: ${MIGRATE_ARCHIVE_STATUS}${reset}"
 echo -e "${green}Migrate forks is set to: ${MIGRATE_FORKS}${reset}"
 echo -e "${green}Visibility is set to: ${VISIBILITY}${reset}"
 echo -e "${green}Dry run is set to: ${DRY_RUN}${reset}"
+echo -e "${green}Output report is set to: ${OUTPUT_REPORT}${reset}"
 
 if $DRY_RUN; then
 	echo -e "${cyan}=== DRY RUN MODE ===${reset}"
@@ -367,6 +381,11 @@ fi
 # -------------------------
 # 3. Migrate each GitHub repository to Forgejo.
 # -------------------------
+
+# Temp file for accumulating report entries; cleaned up on exit.
+report_tmpfile=$(mktemp)
+trap 'rm -f "$report_tmpfile"' EXIT
+
 repo_count=$(echo "$all_repos" | jq 'length')
 if [ "$repo_count" -eq 0 ]; then
 	echo "No repositories found for user $GITHUB_USER."
@@ -385,6 +404,10 @@ echo "$all_repos" | jq -c '.[]' | while read -r repo; do
 	# Skip forked repos if MIGRATE_FORKS is false
 	if [ "$fork_flag" = "true" ] && [ "$MIGRATE_FORKS" = false ]; then
 		echo -e "${yellow}Skipping fork: ${white}$repo_name${reset}"
+		if $OUTPUT_REPORT; then
+			jq -n --arg name "$repo_name" --arg url "$html_url" --argjson priv "$private_flag" --argjson arch "$archived_flag" \
+				'{repo_name: $name, repo_url: $url, private: $priv, archived_on_github: $arch, fork: true, skipped: true, errored: false, new_location: null, archived_on_new_location: false}' >> "$report_tmpfile"
+		fi
 		continue
 	fi
 
@@ -402,6 +425,10 @@ echo "$all_repos" | jq -c '.[]' | while read -r repo; do
 	if [ "$private_flag" = "true" ]; then
 		if [ -z "$GITHUB_TOKEN" ]; then
 			echo -e " ${red}Error: Private repo but no GitHub token provided!${reset}"
+			if $OUTPUT_REPORT; then
+				jq -n --arg name "$repo_name" --arg url "$html_url" --argjson priv "$private_flag" --argjson arch "$archived_flag" --argjson fork "$fork_flag" \
+					'{repo_name: $name, repo_url: $url, private: $priv, archived_on_github: $arch, fork: $fork, skipped: true, errored: false, new_location: null, archived_on_new_location: false}' >> "$report_tmpfile"
+			fi
 			continue
 		fi
 	fi
@@ -429,28 +456,39 @@ echo "$all_repos" | jq -c '.[]' | while read -r repo; do
 		# Send the POST request to the Forgejo migration endpoint.
 		response=$(safe_curl -H "Content-Type: application/json" -H "Authorization: token $FORGEJO_TOKEN" -d "$payload" "$FORGEJO_URL/api/v1/repos/migrate") || {
 			echo -e " ${red}Migration request failed.${reset}"
+			if $OUTPUT_REPORT; then
+				jq -n --arg name "$repo_name" --arg url "$html_url" --argjson priv "$private_flag" --argjson arch "$archived_flag" --argjson fork "$fork_flag" \
+					'{repo_name: $name, repo_url: $url, private: $priv, archived_on_github: $arch, fork: $fork, skipped: false, errored: true, new_location: null, archived_on_new_location: false}' >> "$report_tmpfile"
+			fi
 			continue
 		}
 		error_message=$(echo "$response" | jq -r '.message // empty')
 
-		success=false
+		migration_errored=true
 		if [[ "$error_message" == *"already exists"* ]]; then
 			echo -e " ${yellow}Already exists!${reset}"
-			success=true
+			migration_errored=false
 		elif [ -n "$error_message" ]; then
 			echo -e " ${red}Unknown error: $error_message${reset}"
 		else
 			echo -e " ${green}Success!${reset}"
-			success=true
+			migration_errored=false
 		fi
 	else
 		echo -e "\n${cyan}[DRY RUN] Would migrate: $repo_name${reset}"
-		success=true
+		migration_errored=false
+	fi
+
+	# archived_on_new_location: true when the repo is archived on GitHub and the user
+	# opted in to transfer archive status, regardless of the actual PATCH result.
+	archived_on_new_location=false
+	if [ "$archived_flag" = "true" ] && [ "$MIGRATE_ARCHIVE_STATUS" = true ]; then
+		archived_on_new_location=true
 	fi
 
 	# If migration succeeded (or already existed) and the repo is archived on GitHub,
 	# and the user wants to transfer archive status, patch the Forgejo repo.
-	if [ "$success" = true ] && [ "$archived_flag" = "true" ] && [ "$MIGRATE_ARCHIVE_STATUS" = true ]; then
+	if [ "$migration_errored" = false ] && [ "$archived_flag" = "true" ] && [ "$MIGRATE_ARCHIVE_STATUS" = true ]; then
 		if [ "$mirror" = true ]; then
 			echo -e "  ${yellow}Skipping archive status transfer (not supported for mirrors).${reset}"
 		else
@@ -472,4 +510,22 @@ echo "$all_repos" | jq -c '.[]' | while read -r repo; do
 			fi
 		fi
 	fi
+
+	if $OUTPUT_REPORT; then
+		jq -n \
+			--arg name "$repo_name" \
+			--arg url "$html_url" \
+			--argjson priv "$private_flag" \
+			--argjson arch "$archived_flag" \
+			--argjson fork "$fork_flag" \
+			--argjson err "$migration_errored" \
+			--arg loc "$FORGEJO_URL/$FORGEJO_USER/$repo_name" \
+			--argjson archNew "$archived_on_new_location" \
+			'{repo_name: $name, repo_url: $url, private: $priv, archived_on_github: $arch, fork: $fork, skipped: false, errored: $err, new_location: (if $err then null else $loc end), archived_on_new_location: $archNew}' >> "$report_tmpfile"
+	fi
 done
+
+if $OUTPUT_REPORT; then
+	jq -s '.' "$report_tmpfile" > migration.json
+	echo -e "${green}Migration report written to: ${white}migration.json${reset}"
+fi
